@@ -1,0 +1,63 @@
+-- BLOX STRIKE HUB — XENO (pequeno e funcional)
+local Players, RS, UIS = game:GetService("Players"), game:GetService("RunService"), game:GetService("UserInputService")
+local P = Players.LocalPlayer, GUI = Instance.new("ScreenGui")
+GUI.Name = "BloxStrike"; GUI.ResetOnSpawn = false; GUI.Parent = P:WaitForChild("PlayerGui")
+
+local Root = P.Character:WaitForChild("HumanoidRootPart")
+local T = { aim=false, atk=false }
+
+-- Painel
+local F = Instance.new("Frame"); F.Size = UDim2.new(.3,0,.4,0); F.Position = UDim2.new(.5,-160,.3,0)
+F.BackgroundColor3 = Color3.fromRGB(22,24,32); F.BorderSizePixel = 0; F.Parent = GUI
+local C = Instance.new("UICorner"); C.CornerRadius = UDim.fromPercent(.15); C.Parent = F
+
+Instance.new("Label").Properties = { Text="◆ BLOX STRIKE HUB", Size=UDim2.new(1,0,.15,0), Position=UDim2.new(0,.05,0,0),
+    Font=Enum.Font.GothamBold, TextColor3=Color3.fromRGB(255,255,255), BackgroundTransparency=1, Parent=F }
+
+local function btn(name, y)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(.9,0,.1,0); b.Position = UDim2.new(.05,y,0,0)
+    b.BackgroundColor3 = Color3.fromRGB(45,50,65); b.TextColor3 = Color3.fromRGB(255,255,255)
+    b.Font = Enum.Font.GothamBold; b.Text = name; b.Parent = F
+    return b
+end
+
+local aimBtn = btn("AIMBOT: OFF", .28)
+local atkBtn = btn("AUTO ATTACK: OFF", .46)
+
+-- Alvo mais próximo
+local function target()
+    local rp = Root.Position; local best, d
+    for _,v in pairs(game.Workspace:GetChildren()) do
+        local h,rp2 = v:FindFirstChildOfClass("Humanoid"), v:FindFirstChild("HumanoidRootPart")
+        if h and rp2 and v~=P.Character then
+            local dist = (rp2.Position-rp).Magnitude
+            if dist<150 and (not d or dist<d) then best,d = rp2.Position, dist end
+        end
+    end
+    return best
+end
+
+-- Aimbot
+RS.RenderStepped:Connect(function()
+    if T.aim then local t=target(); if t then pcall(function() camera.CFrame=CFrame.new(camera.Position,t) end) end end
+end)
+
+-- Auto attack (tecla K)
+local atkConn
+RS.Stepped:Connect(function()
+    if T.atk then pcall(function() UIS:InjectKeyDown(Enum.KeyCode.K); wait(.12); UIS:InjectKeyUp(Enum.KeyCode.K) end) end
+end)
+
+aimBtn.MouseButton1Connect(function()
+    T.aim = not T.aim; aimBtn.Text = "AIMBOT: "..(T.aim and "ON" or "OFF")
+    aimBtn.BackgroundColor3 = T.aim and Color3.fromRGB(90,170,255) or Color3.fromRGB(45,50,65)
+end)
+
+atkBtn.MouseButton1Connect(function()
+    T.atk = not T.atk; atkBtn.Text = "AUTO ATTACK: "..(T.atk and "ON" or "OFF")
+    atkBtn.BackgroundColor3 = T.atk and Color3.fromRGB(160,110,255) or Color3.fromRGB(45,50,65)
+end)
+
+-- Abrir/fechar com F9
+UIS.InputBegan:Connect(function(i,p) if i.KeyCode==Enum.KeyCode.F9 and not p then F.Visible=not F.Visible end end)
