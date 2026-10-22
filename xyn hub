@@ -1,37 +1,46 @@
--- language: Lua, file: bloxstrike_fix.lua
--- BLOX STRIKE HUB — FIX (PC / Executor)
+-- language: Lua, file: bloxstrike_xeno_fix.lua
+-- BLOX STRIKE HUB — XENO PC (UI Forçada + Drag Manual)
+print("[Hub] Iniciando script...")
+
 local Players = game:GetService("Players")
 local RS = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
-local Camera = workspace.CurrentCamera
+local Workspace = workspace
 
 local P = Players.LocalPlayer
+
+-- ==========================================
+-- CRIAÇÃO DA UI (Forçada na CoreGui)
+-- ==========================================
 local GUI = Instance.new("ScreenGui")
-GUI.Name = "BloxStrike"
+GUI.Name = "BloxStrikeHub"
 GUI.ResetOnSpawn = false
-GUI.Parent = P:WaitForChild("PlayerGui")
+-- Se o executor tiver gethui, usa. Se não, usa CoreGui.
+if gethui then
+    GUI.Parent = gethui()
+else
+    GUI.Parent = game:GetService("CoreGui")
+end
 
-local T = { aim = false, atk = false }
-local isAiming = false
-
--- ==========================================
--- PAINEL UI (Corrigido)
--- ==========================================
 local F = Instance.new("Frame")
-F.Size = UDim2.new(0, 280, 0, 200)
-F.Position = UDim2.new(0.5, -140, 0.3, 0)
+F.Size = UDim2.new(0, 280, 0, 220)
+F.Position = UDim2.new(0.5, -140, 0.5, -110)
 F.BackgroundColor3 = Color3.fromRGB(22, 24, 32)
 F.BorderSizePixel = 0
 F.Active = true
-F.Draggable = true -- PC
 F.Parent = GUI
 
 local C = Instance.new("UICorner")
 C.CornerRadius = UDim.new(0, 10)
 C.Parent = F
 
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(90, 170, 255)
+Stroke.Thickness = 1.5
+Stroke.Parent = F
+
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 35)
+Title.Size = UDim2.new(1, 0, 0, 40)
 Title.Position = UDim2.new(0, 0, 0, 0)
 Title.Text = "◆ BLOX STRIKE HUB"
 Title.Font = Enum.Font.GothamBold
@@ -39,9 +48,9 @@ Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.BackgroundTransparency = 1
 Title.Parent = F
 
-local function btn(name, yOffset)
+local function makeBtn(name, yOffset, color)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.9, 0, 0, 35)
+    b.Size = UDim2.new(0.9, 0, 0, 40)
     b.Position = UDim2.new(0.05, 0, 0, yOffset)
     b.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
     b.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -56,12 +65,35 @@ local function btn(name, yOffset)
     return b
 end
 
-local aimBtn = btn("AIMBOT: OFF", 45)
-local atkBtn = btn("AUTO ATTACK: OFF", 90)
+local aimBtn = makeBtn("AIMBOT: OFF", 55)
+local atkBtn = makeBtn("AUTO ATTACK: OFF", 105)
+
+-- SISTEMA DE ARRASTAR A UI NA MÃO (Pra funcionar no Xeno)
+local dragging, dragInput, dragStart, startPos
+Title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = F.Position
+    end
+end)
+UIS.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        F.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
 
 -- ==========================================
 -- LÓGICA (Aimbot e Auto Attack)
 -- ==========================================
+local T = { aim = false, atk = false }
+
 local function getRoot()
     return P.Character and P.Character:FindFirstChild("HumanoidRootPart")
 end
@@ -73,7 +105,7 @@ local function getTarget()
     local rp = root.Position
     local best, bestDist = nil, 150
     
-    for _, v in pairs(workspace:GetChildren()) do
+    for _, v in pairs(Workspace:GetChildren()) do
         local hum = v:FindFirstChildOfClass("Humanoid")
         local hrp = v:FindFirstChild("HumanoidRootPart")
         
@@ -88,8 +120,9 @@ local function getTarget()
     return best
 end
 
--- Aimbot
+-- Aimbot (Puxa a câmera)
 RS.RenderStepped:Connect(function()
+    local Camera = Workspace.CurrentCamera
     if T.aim then
         local target = getTarget()
         if target then
@@ -105,32 +138,21 @@ RS.RenderStepped:Connect(function()
     end
 end)
 
--- Auto Attack (Sem travar a thread)
+-- Auto Attack (Manda tecla K)
 task.spawn(function()
-    while task.wait(0.12) do
-        if T.atk and not isAiming then
-            isAiming = true
+    local vim = game:GetService("VirtualInputManager")
+    while task.wait(0.15) do
+        if T.atk then
             pcall(function()
-                if UIS.InjectKeyDown then
-                    UIS:InjectKeyDown(Enum.KeyCode.K)
-                    task.wait(0.05)
-                    UIS:InjectKeyUp(Enum.KeyCode.K)
-                else
-                    -- Fallback para PC sem InjectKey
-                    local vim = game:GetService("VirtualInputManager")
-                    vim:SendKeyEvent(true, Enum.KeyCode.K, false, game)
-                    task.wait(0.05)
-                    vim:SendKeyEvent(false, Enum.KeyCode.K, false, game)
-                end
+                vim:SendKeyEvent(true, Enum.KeyCode.K, false, game)
+                task.wait(0.05)
+                vim:SendKeyEvent(false, Enum.KeyCode.K, false, game)
             end)
-            isAiming = false
         end
     end
 end)
 
--- ==========================================
--- EVENTOS DOS BOTÕES
--- ==========================================
+-- Botões
 aimBtn.MouseButton1Click:Connect(function()
     T.aim = not T.aim
     aimBtn.Text = "AIMBOT: " .. (T.aim and "ON" or "OFF")
@@ -143,9 +165,11 @@ atkBtn.MouseButton1Click:Connect(function()
     atkBtn.BackgroundColor3 = T.atk and Color3.fromRGB(160, 110, 255) or Color3.fromRGB(45, 50, 65)
 end)
 
--- Abrir/fechar com F9
+-- Toggle F9
 UIS.InputBegan:Connect(function(i, p) 
     if i.KeyCode == Enum.KeyCode.F9 and not p then 
         F.Visible = not F.Visible 
     end 
 end)
+
+print("[Hub] Script carregado com sucesso! A UI deve estar na tela.")
