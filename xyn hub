@@ -1,38 +1,88 @@
--- BLOX STRIKE HUB — XENO (pequeno e funcional)
-local Players, RS, UIS = game:GetService("Players"), game:GetService("RunService"), game:GetService("UserInputService")
-local P = Players.LocalPlayer, GUI = Instance.new("ScreenGui")
-GUI.Name = "BloxStrike"; GUI.ResetOnSpawn = false; GUI.Parent = P:WaitForChild("PlayerGui")
+-- language: Lua, file: bloxstrike_fix.lua
+-- BLOX STRIKE HUB — FIX (PC / Executor)
+local Players = game:GetService("Players")
+local RS = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
 
-local Root = P.Character:WaitForChild("HumanoidRootPart")
-local T = { aim=false, atk=false }
+local P = Players.LocalPlayer
+local GUI = Instance.new("ScreenGui")
+GUI.Name = "BloxStrike"
+GUI.ResetOnSpawn = false
+GUI.Parent = P:WaitForChild("PlayerGui")
 
--- Painel
-local F = Instance.new("Frame"); F.Size = UDim2.new(.3,0,.4,0); F.Position = UDim2.new(.5,-160,.3,0)
-F.BackgroundColor3 = Color3.fromRGB(22,24,32); F.BorderSizePixel = 0; F.Parent = GUI
-local C = Instance.new("UICorner"); C.CornerRadius = UDim.fromPercent(.15); C.Parent = F
+local T = { aim = false, atk = false }
+local isAiming = false
 
-Instance.new("Label").Properties = { Text="◆ BLOX STRIKE HUB", Size=UDim2.new(1,0,.15,0), Position=UDim2.new(0,.05,0,0),
-    Font=Enum.Font.GothamBold, TextColor3=Color3.fromRGB(255,255,255), BackgroundTransparency=1, Parent=F }
+-- ==========================================
+-- PAINEL UI (Corrigido)
+-- ==========================================
+local F = Instance.new("Frame")
+F.Size = UDim2.new(0, 280, 0, 200)
+F.Position = UDim2.new(0.5, -140, 0.3, 0)
+F.BackgroundColor3 = Color3.fromRGB(22, 24, 32)
+F.BorderSizePixel = 0
+F.Active = true
+F.Draggable = true -- PC
+F.Parent = GUI
 
-local function btn(name, y)
+local C = Instance.new("UICorner")
+C.CornerRadius = UDim.new(0, 10)
+C.Parent = F
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.Text = "◆ BLOX STRIKE HUB"
+Title.Font = Enum.Font.GothamBold
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.BackgroundTransparency = 1
+Title.Parent = F
+
+local function btn(name, yOffset)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(.9,0,.1,0); b.Position = UDim2.new(.05,y,0,0)
-    b.BackgroundColor3 = Color3.fromRGB(45,50,65); b.TextColor3 = Color3.fromRGB(255,255,255)
-    b.Font = Enum.Font.GothamBold; b.Text = name; b.Parent = F
+    b.Size = UDim2.new(0.9, 0, 0, 35)
+    b.Position = UDim2.new(0.05, 0, 0, yOffset)
+    b.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    b.Text = name
+    b.Parent = F
+    
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 6)
+    bc.Parent = b
     return b
 end
 
-local aimBtn = btn("AIMBOT: OFF", .28)
-local atkBtn = btn("AUTO ATTACK: OFF", .46)
+local aimBtn = btn("AIMBOT: OFF", 45)
+local atkBtn = btn("AUTO ATTACK: OFF", 90)
 
--- Alvo mais próximo
-local function target()
-    local rp = Root.Position; local best, d
-    for _,v in pairs(game.Workspace:GetChildren()) do
-        local h,rp2 = v:FindFirstChildOfClass("Humanoid"), v:FindFirstChild("HumanoidRootPart")
-        if h and rp2 and v~=P.Character then
-            local dist = (rp2.Position-rp).Magnitude
-            if dist<150 and (not d or dist<d) then best,d = rp2.Position, dist end
+-- ==========================================
+-- LÓGICA (Aimbot e Auto Attack)
+-- ==========================================
+local function getRoot()
+    return P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getTarget()
+    local root = getRoot()
+    if not root then return nil end
+    
+    local rp = root.Position
+    local best, bestDist = nil, 150
+    
+    for _, v in pairs(workspace:GetChildren()) do
+        local hum = v:FindFirstChildOfClass("Humanoid")
+        local hrp = v:FindFirstChild("HumanoidRootPart")
+        
+        if hum and hrp and hum.Health > 0 and v ~= P.Character then
+            local dist = (hrp.Position - rp).Magnitude
+            if dist < bestDist then 
+                best = hrp
+                bestDist = dist 
+            end
         end
     end
     return best
@@ -40,24 +90,62 @@ end
 
 -- Aimbot
 RS.RenderStepped:Connect(function()
-    if T.aim then local t=target(); if t then pcall(function() camera.CFrame=CFrame.new(camera.Position,t) end) end end
+    if T.aim then
+        local target = getTarget()
+        if target then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, target.Position), 0.25)
+        else
+            Camera.CameraType = Enum.CameraType.Custom
+        end
+    else
+        if Camera.CameraType == Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Custom
+        end
+    end
 end)
 
--- Auto attack (tecla K)
-local atkConn
-RS.Stepped:Connect(function()
-    if T.atk then pcall(function() UIS:InjectKeyDown(Enum.KeyCode.K); wait(.12); UIS:InjectKeyUp(Enum.KeyCode.K) end) end
+-- Auto Attack (Sem travar a thread)
+task.spawn(function()
+    while task.wait(0.12) do
+        if T.atk and not isAiming then
+            isAiming = true
+            pcall(function()
+                if UIS.InjectKeyDown then
+                    UIS:InjectKeyDown(Enum.KeyCode.K)
+                    task.wait(0.05)
+                    UIS:InjectKeyUp(Enum.KeyCode.K)
+                else
+                    -- Fallback para PC sem InjectKey
+                    local vim = game:GetService("VirtualInputManager")
+                    vim:SendKeyEvent(true, Enum.KeyCode.K, false, game)
+                    task.wait(0.05)
+                    vim:SendKeyEvent(false, Enum.KeyCode.K, false, game)
+                end
+            end)
+            isAiming = false
+        end
+    end
 end)
 
-aimBtn.MouseButton1Connect(function()
-    T.aim = not T.aim; aimBtn.Text = "AIMBOT: "..(T.aim and "ON" or "OFF")
-    aimBtn.BackgroundColor3 = T.aim and Color3.fromRGB(90,170,255) or Color3.fromRGB(45,50,65)
+-- ==========================================
+-- EVENTOS DOS BOTÕES
+-- ==========================================
+aimBtn.MouseButton1Click:Connect(function()
+    T.aim = not T.aim
+    aimBtn.Text = "AIMBOT: " .. (T.aim and "ON" or "OFF")
+    aimBtn.BackgroundColor3 = T.aim and Color3.fromRGB(90, 170, 255) or Color3.fromRGB(45, 50, 65)
 end)
 
-atkBtn.MouseButton1Connect(function()
-    T.atk = not T.atk; atkBtn.Text = "AUTO ATTACK: "..(T.atk and "ON" or "OFF")
-    atkBtn.BackgroundColor3 = T.atk and Color3.fromRGB(160,110,255) or Color3.fromRGB(45,50,65)
+atkBtn.MouseButton1Click:Connect(function()
+    T.atk = not T.atk
+    atkBtn.Text = "AUTO ATTACK: " .. (T.atk and "ON" or "OFF")
+    atkBtn.BackgroundColor3 = T.atk and Color3.fromRGB(160, 110, 255) or Color3.fromRGB(45, 50, 65)
 end)
 
 -- Abrir/fechar com F9
-UIS.InputBegan:Connect(function(i,p) if i.KeyCode==Enum.KeyCode.F9 and not p then F.Visible=not F.Visible end end)
+UIS.InputBegan:Connect(function(i, p) 
+    if i.KeyCode == Enum.KeyCode.F9 and not p then 
+        F.Visible = not F.Visible 
+    end 
+end)
