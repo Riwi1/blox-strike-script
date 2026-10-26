@@ -1,5 +1,5 @@
 -- language: Lua, target: Roblox / Blox Strike (Xeno executor)
--- *Aimbot com CameraOffset zerado e prioridade Camera+100. ESP com Team Check. UI nativa.*
+-- *Silent Aim (Hook) + ESP + CFrame Fly. UI nativa que abre em qualquer executor.*
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -10,34 +10,309 @@ local CoreGui           = game:GetService("CoreGui")
 local Camera            = Workspace.CurrentCamera
 local LocalPlayer       = Players.LocalPlayer
 
-local config = {
-    aim_enabled       = false,
-    aim_fov           = 100,
-    aim_smooth        = 1.0, 
-    aim_part          = "Head",
-    aim_prediction    = 0.135,
-    aim_team_check    = true,
-    aim_wall_check    = true,
+local S = {
+    -- Aim
+    silent_aim = false,
+    aimbot = false,
+    triggerbot = false,
+    fov = 120,
+    smoothness = 0.15,
+    aim_part = "Head",
+    team_check = true,
+    wall_check = true,
+    prediction = 0.12,
     
-    esp_enabled       = false,
-    esp_team_check    = true,
-    esp_box           = true,
-    esp_name          = true,
-    esp_health        = true,
-    esp_distance      = true,
+    -- ESP
+    esp = false,
+    box = true,
+    name = true,
+    distance = true,
+    health = true,
+    tracer = false,
     
-    accent            = Color3.fromRGB(150, 90, 255),
-    bg                = Color3.fromRGB(12, 10, 16),
-    bg_alt            = Color3.fromRGB(20, 16, 28),
-    bg_light          = Color3.fromRGB(30, 24, 42),
-    text              = Color3.fromRGB(235, 230, 245),
+    -- Player
+    fly = false,
+    fly_speed = 70,
+    speed = false,
+    walk_speed = 30,
+    
+    -- Cores
+    accent = Color3.fromRGB(150, 90, 255),
+    bg = Color3.fromRGB(12, 10, 16),
+    bg_alt = Color3.fromRGB(20, 16, 28),
+    bg_light = Color3.fromRGB(30, 24, 42),
+    text = Color3.fromRGB(235, 230, 245),
 }
 
-local drawing_objects = {}
+local esp_objects = {}
 local fov_circle = nil
 local main = nil
+local old_namecall = nil
 
--- ===================== GUI SYSTEM =====================
+-- ===================== HELPERS =====================
+local function is_alive(plr)
+    local char = plr.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
+end
+
+local function same_team(a, b)
+    if not a or not b then return false end
+    local ta, tb = a.Team, b.Team
+    if not ta or not tb then return false end
+    return ta == tb
+end
+
+local function get_part(plr, part_name)
+    local char = plr.Character
+    if not char then return nil end
+    return char:FindFirstChild(part_name) or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function world_to_screen(pos)
+    local sp, on_screen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(sp.X, sp.Y), on_screen and sp.Z > 0
+end
+
+local function has_los(target_char, part)
+    if not S.wall_check then return true end
+    local origin = Camera.CFrame.Position
+    local ray_params = RaycastParams.new()
+    ray_params.FilterType = Enum.RaycastFilterType.Exclude
+    ray_params.FilterDescendantsInstances = { LocalPlayer.Character, target_char }
+    local result = Workspace:Raycast(origin, (part.Position - origin), ray_params)
+    return result == nil
+end
+
+local function is_mouse_over_gui()
+    if not main or not main.Visible then return false end
+    local mouse = UserInputService:GetMouseLocation()
+    local pos = main.AbsolutePosition
+    local size = main.AbsoluteSize
+    return mouse.X >= pos.X and mouse.X <= pos.X + size.X and mouse.Y >= pos.Y and mouse.Y <= pos.Y + size.Y
+end
+
+-- ===================== DRAWING INIT =====================
+pcall(function()
+    fov_circle = Drawing.new("Circle")
+    fov_circle.Thickness = 1.5
+    fov_circle.Color = S.accent
+    fov_circle.Filled = false
+    fov_circle.NumSides = 60
+    fov_circle.Transparency = 0.8
+    fov_circle.Visible = false
+end)
+
+local function create_esp(plr)
+    if plr == LocalPlayer then return end
+    esp_objects[plr] = {
+        box = Drawing.new("Square"), name = Drawing.new("Text"), dist = Drawing.new("Text"),
+        hp_bg = Drawing.new("Square"), hp_bar = Drawing.new("Square"), tracer = Drawing.new("Line")
+    }
+    local d = esp_objects[plr]
+    d.box.Thickness = 1; d.box.Filled = false
+    d.name.Size = 14; d.name.Center = true; d.name.Outline = true
+    d.dist.Size = 13; d.dist.Center = true; d.dist.Outline = true
+    d.hp_bg.Filled = true; d.hp_bg.Color = Color3.fromRGB(30,30,30)
+    d.hp_bar.Filled = true; d.hp_bar.Color = Color3.fromRGB(80,220,120)
+    d.tracer.Thickness = 1; d.tracer.Transparency = 0.8
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do create_esp(plr) end
+Players.PlayerAdded:Connect(create_esp)
+Players.PlayerRemoving:Connect(function(plr)
+    if esp_objects[plr] then
+        for _, obj in pairs(esp_objects[plr]) do pcall(function() obj:Remove() end) end
+        esp_objects[plr] = nil
+    end
+end)
+
+-- ===================== TARGETING =====================
+local function get_closest_target()
+    local center = Camera.ViewportSize / 2
+    local best, best_dist = nil, S.fov
+    
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and is_alive(plr) then
+            if not (S.team_check and same_team(plr, LocalPlayer)) then
+                local part = get_part(plr, S.aim_part)
+                if part then
+                    local sp, on = world_to_screen(part.Position)
+                    if on and has_los(plr.Character, part) then
+                        local dist = (sp - center).Magnitude
+                        if dist < best_dist then
+                            best, best_dist = { plr = plr, part = part, root = plr.Character:FindFirstChild("HumanoidRootPart") }, dist
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- ===================== SILENT AIM HOOK =====================
+pcall(function()
+    old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        
+        -- Intercepta o disparo e força o servidor a registrar no inimigo
+        if S.silent_aim and (method == "InvokeServer" or method == "FireServer" or method == "Shoot") then
+            local target = get_closest_target()
+            if target then
+                local args = {...}
+                for i, v in pairs(args) do
+                    if typeof(v) == "Vector3" or typeof(v) == "CFrame" then
+                        args[i] = target.part.Position
+                    elseif typeof(v) == "Instance" and v:IsA("BasePart") then
+                        args[i] = target.part
+                    elseif typeof(v) == "RaycastParams" then
+                        -- Muitos jogos enviam RaycastParams no FireServer
+                        v.FilterDescendantsInstances = { LocalPlayer.Character, target.plr.Character }
+                    end
+                end
+                return old_namecall(self, table.unpack(args))
+            end
+        end
+        return old_namecall(self, ...)
+    end)
+end)
+
+-- ===================== LOOPS =====================
+RunService.RenderStepped:Connect(function()
+    -- ESP Logic
+    if not S.esp then
+        for _, d in pairs(esp_objects) do
+            for _, obj in pairs(d) do if obj then obj.Visible = false end end
+        end
+    else
+        for plr, d in pairs(esp_objects) do
+            local show = plr.Parent and is_alive(plr)
+            if show and S.team_check and same_team(plr, LocalPlayer) then show = false end
+            if not show then
+                for _, obj in pairs(d) do if obj then obj.Visible = false end end
+                continue
+            end
+
+            local head = plr.Character:FindFirstChild("Head")
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if not head or not root or not hum then continue end
+
+            local top, top_on = world_to_screen(head.Position + Vector3.new(0, 0.8, 0))
+            local bottom, bottom_on = world_to_screen(root.Position - Vector3.new(0, 2.5, 0))
+            
+            if not (top_on or bottom_on) then
+                for _, obj in pairs(d) do if obj then obj.Visible = false end end
+                continue
+            end
+
+            local h = math.abs(bottom.Y - top.Y)
+            local w = h * 0.55
+            local x = math.min(top.X, bottom.X) - w / 2
+            local y = math.min(top.Y, bottom.Y)
+
+            if S.box then
+                d.box.Size = Vector2.new(w, h)
+                d.box.Position = Vector2.new(x, y)
+                d.box.Color = S.accent
+                d.box.Visible = true
+            else d.box.Visible = false end
+
+            if S.health then
+                local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                local bar_h = h * pct
+                d.hp_bg.Size = Vector2.new(3, h)
+                d.hp_bg.Position = Vector2.new(x - 6, y)
+                d.hp_bar.Size = Vector2.new(3, bar_h)
+                d.hp_bar.Position = Vector2.new(x - 6, y + (h - bar_h))
+                d.hp_bg.Visible = true
+                d.hp_bar.Visible = true
+            else
+                d.hp_bg.Visible = false
+                d.hp_bar.Visible = false
+            end
+
+            if S.name then
+                d.name.Text = plr.Name
+                d.name.Position = Vector2.new(x + w / 2, y - 16)
+                d.name.Color = S.accent
+                d.name.Visible = true
+            else d.name.Visible = false end
+
+            if S.distance then
+                d.dist.Text = string.format("%dm", math.floor((root.Position - Camera.CFrame.Position).Magnitude))
+                d.dist.Position = Vector2.new(x + w / 2, y + h + 4)
+                d.dist.Color = Color3.fromRGB(200, 190, 220)
+                d.dist.Visible = true
+            else d.dist.Visible = false end
+
+            if S.tracer then
+                local s_pos, s_on = world_to_screen(head.Position)
+                if s_on then
+                    d.tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                    d.tracer.To = Vector2.new(s_pos.X, s_pos.Y)
+                    d.tracer.Color = S.accent
+                    d.tracer.Visible = true
+                else
+                    d.tracer.Visible = false
+                end
+            else d.tracer.Visible = false end
+        end
+    end
+
+    -- FOV & Aim Logic
+    if fov_circle then
+        fov_circle.Position = Camera.ViewportSize / 2
+        fov_circle.Radius = S.fov
+        fov_circle.Visible = (S.aimbot or S.silent_aim) and not is_mouse_over_gui()
+        fov_circle.Color = S.accent
+    end
+
+    if (S.aimbot or S.triggerbot) and not is_mouse_over_gui() then
+        local target = get_closest_target()
+        if target then
+            if S.aimbot then
+                local part_pos = target.part.Position
+                if S.prediction > 0 and target.root then
+                    part_pos = part_pos + (target.root.AssemblyLinearVelocity * S.prediction)
+                end
+                local goal = CFrame.lookAt(Camera.CFrame.Position, part_pos)
+                Camera.CFrame = Camera.CFrame:Lerp(goal, S.smoothness)
+            end
+            if S.triggerbot then
+                pcall(function() if mouse1click then mouse1click() end end)
+            end
+        end
+    end
+end)
+
+-- Fly / Speed Logic (Sem física)
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    if S.fly then
+        hum.PlatformStand = true
+        local move_dir = Vector3.new(
+            (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0),
+            (UserInputService:IsKeyDown(Enum.KeyCode.Space) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and 1 or 0),
+            (UserInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0)
+        )
+        if move_dir.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + (Camera.CFrame.LookVector * move_dir.Z + Camera.CFrame.RightVector * move_dir.X + Vector3.new(0, move_dir.Y, 0)) * (S.fly_speed / 50)
+        end
+    else
+        if hum.PlatformStand then hum.PlatformStand = false end
+    end
+
+    hum.WalkSpeed = S.speed and S.walk_speed or 16
+end)
+
+-- ===================== GUI =====================
 local function corner(parent, r)
     local c = Instance.new("UICorner", parent)
     c.CornerRadius = UDim.new(0, r or 6)
@@ -56,37 +331,37 @@ if not parented then pcall(function() gui.Parent = CoreGui; parented = true end)
 if not parented then gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
 main = Instance.new("Frame", gui)
-main.Size = UDim2.fromOffset(440, 320)
-main.Position = UDim2.fromOffset(20, 20) 
-main.BackgroundColor3 = config.bg
+main.Size = UDim2.fromOffset(440, 340)
+main.Position = UDim2.fromOffset(20, 20)
+main.BackgroundColor3 = S.bg
 main.BorderSizePixel = 0
 main.Active = true
-main.Draggable = false 
+main.Draggable = false
 corner(main, 10)
 
 local mainStroke = Instance.new("UIStroke", main)
-mainStroke.Color = config.accent
+mainStroke.Color = S.accent
 mainStroke.Thickness = 1.5
 
 local titlebar = Instance.new("Frame", main)
 titlebar.Size = UDim2.new(1, 0, 0, 36)
-titlebar.BackgroundColor3 = config.bg_alt
+titlebar.BackgroundColor3 = S.bg_alt
 corner(titlebar, 10)
 
 local title = Instance.new("TextLabel", titlebar)
 title.Size = UDim2.new(1, -100, 1, 0)
 title.Position = UDim2.fromOffset(14, 0)
 title.BackgroundTransparency = 1
-title.Text = "Xyn Blox Strike"
+title.Text = "Xyn Hub • Blox Strike"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 15
-title.TextColor3 = config.accent
+title.TextColor3 = S.accent
 title.TextXAlignment = Enum.TextXAlignment.Left
 
 local close = Instance.new("TextButton", titlebar)
 close.Size = UDim2.fromOffset(24, 24)
 close.Position = UDim2.new(1, -32, 0, 6)
-close.BackgroundColor3 = config.bg_light
+close.BackgroundColor3 = S.bg_light
 close.Text = "×"
 close.Font = Enum.Font.GothamBold
 close.TextSize = 16
@@ -97,17 +372,17 @@ close.MouseButton1Click:Connect(function() main.Visible = false end)
 local min_btn = Instance.new("TextButton", titlebar)
 min_btn.Size = UDim2.fromOffset(24, 24)
 min_btn.Position = UDim2.new(1, -64, 0, 6)
-min_btn.BackgroundColor3 = config.bg_light
+min_btn.BackgroundColor3 = S.bg_light
 min_btn.Text = "-"
 min_btn.Font = Enum.Font.GothamBold
 min_btn.TextSize = 16
-min_btn.TextColor3 = config.text
+min_btn.TextColor3 = S.text
 corner(min_btn, 6)
 
 local tab_bar = Instance.new("Frame", main)
 tab_bar.Size = UDim2.new(0, 100, 1, -44)
 tab_bar.Position = UDim2.fromOffset(8, 44)
-tab_bar.BackgroundColor3 = config.bg_alt
+tab_bar.BackgroundColor3 = S.bg_alt
 corner(tab_bar, 8)
 
 local content_scroll = Instance.new("ScrollingFrame", main)
@@ -118,7 +393,7 @@ content_scroll.BorderSizePixel = 0
 content_scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 content_scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 content_scroll.ScrollBarThickness = 4
-content_scroll.ScrollBarImageColor3 = config.accent
+content_scroll.ScrollBarImageColor3 = S.accent
 
 local content_layout = Instance.new("UIListLayout", content_scroll)
 content_layout.Padding = UDim.new(0, 6)
@@ -136,7 +411,7 @@ min_btn.MouseButton1Click:Connect(function()
         content_scroll.Visible = false
         min_btn.Text = "+"
     else
-        main.Size = UDim2.fromOffset(440, 320)
+        main.Size = UDim2.fromOffset(440, 340)
         tab_bar.Visible = true
         content_scroll.Visible = true
         min_btn.Text = "-"
@@ -148,12 +423,12 @@ local function make_tab(name, order)
     local b = Instance.new("TextButton", tab_bar)
     b.Size = UDim2.new(1, -12, 0, 32)
     b.Position = UDim2.fromOffset(6, 8 + (order - 1) * 38)
-    b.BackgroundColor3 = config.bg_light
+    b.BackgroundColor3 = S.bg_light
     b.Text = "  " .. name
     b.TextXAlignment = Enum.TextXAlignment.Left
     b.Font = Enum.Font.GothamMedium
     b.TextSize = 13
-    b.TextColor3 = config.text
+    b.TextColor3 = S.text
     corner(b, 6)
     
     local page = Instance.new("Frame", content_scroll)
@@ -170,10 +445,10 @@ local function make_tab(name, order)
     b.MouseButton1Click:Connect(function()
         for _, t in pairs(tabs) do
             t.page.Visible = false
-            t.button.BackgroundColor3 = config.bg_light
+            t.button.BackgroundColor3 = S.bg_light
         end
         page.Visible = true
-        b.BackgroundColor3 = config.accent
+        b.BackgroundColor3 = S.accent
     end)
     return page
 end
@@ -182,7 +457,7 @@ local ui_order = 1
 local function add_toggle(page, label, key)
     local holder = Instance.new("Frame", page)
     holder.Size = UDim2.new(1, 0, 0, 32)
-    holder.BackgroundColor3 = config.bg_alt
+    holder.BackgroundColor3 = S.bg_alt
     holder.LayoutOrder = ui_order
     corner(holder, 6)
     ui_order = ui_order + 1
@@ -194,33 +469,33 @@ local function add_toggle(page, label, key)
     lbl.Text = label
     lbl.Font = Enum.Font.GothamMedium
     lbl.TextSize = 12
-    lbl.TextColor3 = config.text
+    lbl.TextColor3 = S.text
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     
     local btn = Instance.new("TextButton", holder)
     btn.Size = UDim2.fromOffset(38, 18)
     btn.Position = UDim2.new(1, -48, 0.5, -9)
-    btn.BackgroundColor3 = config[key] and config.accent or config.bg_light
+    btn.BackgroundColor3 = S[key] and S.accent or S.bg_light
     btn.Text = ""
     corner(btn, 9)
     
     local dot = Instance.new("Frame", btn)
     dot.Size = UDim2.fromOffset(14, 14)
-    dot.Position = config[key] and UDim2.fromOffset(21, 2) or UDim2.fromOffset(3, 2)
-    dot.BackgroundColor3 = config.text
+    dot.Position = S[key] and UDim2.fromOffset(21, 2) or UDim2.fromOffset(3, 2)
+    dot.BackgroundColor3 = S.text
     corner(dot, 7)
     
     btn.MouseButton1Click:Connect(function()
-        config[key] = not config[key]
-        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = config[key] and config.accent or config.bg_light}):Play()
-        TweenService:Create(dot, TweenInfo.new(0.15), {Position = config[key] and UDim2.fromOffset(21, 2) or UDim2.fromOffset(3, 2)}):Play()
+        S[key] = not S[key]
+        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = S[key] and S.accent or S.bg_light}):Play()
+        TweenService:Create(dot, TweenInfo.new(0.15), {Position = S[key] and UDim2.fromOffset(21, 2) or UDim2.fromOffset(3, 2)}):Play()
     end)
 end
 
 local function add_slider(page, label, key, min, max, decimals)
     local holder = Instance.new("Frame", page)
     holder.Size = UDim2.new(1, 0, 0, 52)
-    holder.BackgroundColor3 = config.bg_alt
+    holder.BackgroundColor3 = S.bg_alt
     holder.LayoutOrder = ui_order
     corner(holder, 6)
     ui_order = ui_order + 1
@@ -229,27 +504,27 @@ local function add_slider(page, label, key, min, max, decimals)
     lbl.Size = UDim2.new(1, -20, 0, 16)
     lbl.Position = UDim2.fromOffset(12, 5)
     lbl.BackgroundTransparency = 1
-    lbl.Text = label .. ": " .. tostring(config[key])
+    lbl.Text = label .. ": " .. tostring(S[key])
     lbl.Font = Enum.Font.GothamMedium
     lbl.TextSize = 12
-    lbl.TextColor3 = config.text
+    lbl.TextColor3 = S.text
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     
     local track = Instance.new("Frame", holder)
     track.Size = UDim2.new(1, -24, 0, 4)
     track.Position = UDim2.new(0, 12, 0, 34)
-    track.BackgroundColor3 = config.bg_light
+    track.BackgroundColor3 = S.bg_light
     corner(track, 2)
     
     local fill = Instance.new("Frame", track)
-    fill.Size = UDim2.new((config[key] - min) / (max - min), 0, 1, 0)
-    fill.BackgroundColor3 = config.accent
+    fill.Size = UDim2.new((S[key] - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = S.accent
     corner(fill, 2)
     
     local knob = Instance.new("Frame", track)
     knob.Size = UDim2.fromOffset(12, 12)
     knob.Position = UDim2.new(fill.Size.X.Scale, -6, 0.5, -6)
-    knob.BackgroundColor3 = config.text
+    knob.BackgroundColor3 = S.text
     corner(knob, 6)
     
     local dragging = false
@@ -264,7 +539,7 @@ local function add_slider(page, label, key, min, max, decimals)
             local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
             local val = min + rel * (max - min)
             if decimals then val = math.floor(val * 10^decimals) / 10^decimals else val = math.floor(val) end
-            config[key] = val
+            S[key] = val
             fill.Size = UDim2.new(rel, 0, 1, 0)
             knob.Position = UDim2.new(rel, -6, 0.5, -6)
             lbl.Text = label .. ": " .. tostring(val)
@@ -273,298 +548,36 @@ local function add_slider(page, label, key, min, max, decimals)
 end
 
 local aim_page = make_tab("Aimbot", 1)
-local esp_page = make_tab("ESP", 2)
+local visual_page = make_tab("Visuals", 2)
+local player_page = make_tab("Player", 3)
 
 -- Aimbot UI
-add_toggle(aim_page, "Enable Aimbot", "aim_enabled")
-add_toggle(aim_page, "Team Check", "aim_team_check")
-add_toggle(aim_page, "Wall Check", "aim_wall_check")
+add_toggle(aim_page, "Silent Aim (Invisível)", "silent_aim")
+add_toggle(aim_page, "Aimbot (Puxa Câmera)", "aimbot")
+add_toggle(aim_page, "Triggerbot (Auto-Tiro)", "triggerbot")
+add_toggle(aim_page, "Team Check", "team_check")
+add_toggle(aim_page, "Wall Check", "wall_check")
+add_slider(aim_page, "FOV", "fov", 20, 400, 0)
+add_slider(aim_page, "Smoothness", "smoothness", 0.05, 1.0, 2)
+add_slider(aim_page, "Prediction", "prediction", 0, 0.4, 2)
 
--- Seletor de Parte
-local part_holder = Instance.new("Frame", aim_page)
-part_holder.Size = UDim2.new(1, 0, 0, 32)
-part_holder.BackgroundColor3 = config.bg_alt
-part_holder.LayoutOrder = ui_order
-corner(part_holder, 6)
-ui_order = ui_order + 1
+-- Visuals UI
+add_toggle(visual_page, "Enable ESP", "esp")
+add_toggle(visual_page, "Box", "box")
+add_toggle(visual_page, "Name", "name")
+add_toggle(visual_page, "Distance", "distance")
+add_toggle(visual_page, "Health Bar", "health")
+add_toggle(visual_page, "Tracers", "tracer")
 
-local part_lbl = Instance.new("TextLabel", part_holder)
-part_lbl.Size = UDim2.new(1, -100, 1, 0)
-part_lbl.Position = UDim2.fromOffset(12, 0)
-part_lbl.BackgroundTransparency = 1
-part_lbl.Text = "Aim Part"
-part_lbl.Font = Enum.Font.GothamMedium
-part_lbl.TextSize = 12
-part_lbl.TextColor3 = config.text
-part_lbl.TextXAlignment = Enum.TextXAlignment.Left
-
-local head_btn = Instance.new("TextButton", part_holder)
-head_btn.Size = UDim2.fromOffset(40, 22)
-head_btn.Position = UDim2.new(1, -88, 0.5, -11)
-head_btn.BackgroundColor3 = config.accent
-head_btn.Text = "Head"
-head_btn.Font = Enum.Font.GothamBold
-head_btn.TextSize = 11
-head_btn.TextColor3 = config.text
-corner(head_btn, 4)
-
-local body_btn = Instance.new("TextButton", part_holder)
-body_btn.Size = UDim2.fromOffset(40, 22)
-body_btn.Position = UDim2.new(1, -44, 0.5, -11)
-body_btn.BackgroundColor3 = config.bg_light
-body_btn.Text = "Body"
-body_btn.Font = Enum.Font.GothamBold
-body_btn.TextSize = 11
-body_btn.TextColor3 = config.text
-corner(body_btn, 4)
-
-local function update_part_ui(part)
-    config.aim_part = part
-    head_btn.BackgroundColor3 = (part == "Head") and config.accent or config.bg_light
-    body_btn.BackgroundColor3 = (part == "Body") and config.accent or config.bg_light
-end
-head_btn.MouseButton1Click:Connect(function() update_part_ui("Head") end)
-body_btn.MouseButton1Click:Connect(function() update_part_ui("Body") end)
-
-add_slider(aim_page, "FOV", "aim_fov", 20, 400, 0)
-add_slider(aim_page, "Smoothness", "aim_smooth", 0.1, 1.0, 2)
-add_slider(aim_page, "Prediction", "aim_prediction", 0, 0.4, 2)
-
--- ESP UI
-add_toggle(esp_page, "Enable ESP", "esp_enabled")
-add_toggle(esp_page, "Team Check", "esp_team_check")
-add_toggle(esp_page, "Box", "esp_box")
-add_toggle(esp_page, "Name", "esp_name")
-add_toggle(esp_page, "Health Bar", "esp_health")
-add_toggle(esp_page, "Distance", "esp_distance")
+-- Player UI
+add_toggle(player_page, "Fly (CFrame)", "fly")
+add_slider(player_page, "Fly Speed", "fly_speed", 20, 200, 0)
+add_toggle(player_page, "Speed Hack", "speed")
+add_slider(player_page, "Walk Speed", "walk_speed", 16, 100, 0)
 
 tabs["Aimbot"].page.Visible = true
-tabs["Aimbot"].button.BackgroundColor3 = config.accent
+tabs["Aimbot"].button.BackgroundColor3 = S.accent
 
--- ===================== HELPERS =====================
-local function is_alive(plr)
-    local char = plr.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    return hum and hum.Health > 0
-end
-
-local function same_team(a, b)
-    if not a or not b then return false end
-    local ta, tb = a.Team, b.Team
-    if not ta or not tb then return false end
-    return ta == tb
-end
-
-local function has_los(target_char, part)
-    if not config.aim_wall_check then return true end
-    local origin = Camera.CFrame.Position
-    local ray_params = RaycastParams.new()
-    ray_params.FilterType = Enum.RaycastFilterType.Exclude
-    ray_params.FilterDescendantsInstances = { LocalPlayer.Character, target_char }
-    local result = Workspace:Raycast(origin, (part.Position - origin), ray_params)
-    return result == nil
-end
-
-local function is_mouse_over_gui()
-    if not main or not main.Visible then return false end
-    local mouse = UserInputService:GetMouseLocation()
-    local pos = main.AbsolutePosition
-    local size = main.AbsoluteSize
-    return mouse.X >= pos.X and mouse.X <= pos.X + size.X and mouse.Y >= pos.Y and mouse.Y <= pos.Y + size.Y
-end
-
-local function get_hitbox(char)
-    if not char then return nil end
-    if config.aim_part == "Head" then
-        return char:FindFirstChild("Head")
-    else
-        return char:FindFirstChild("Torso") 
-            or char:FindFirstChild("UpperTorso") 
-            or char:FindFirstChild("HumanoidRootPart")
-    end
-end
-
--- ===================== DRAWING INIT =====================
-pcall(function()
-    fov_circle = Drawing.new("Circle")
-    fov_circle.Thickness = 1.5
-    fov_circle.Color = config.accent
-    fov_circle.Filled = false
-    fov_circle.NumSides = 60
-    fov_circle.Transparency = 0.8
-    fov_circle.Visible = false
-end)
-
-local function create_esp(plr)
-    if plr == LocalPlayer then return end
-    drawing_objects[plr] = {
-        box    = Drawing.new("Square"),
-        name   = Drawing.new("Text"),
-        hp_bg  = Drawing.new("Square"),
-        hp_bar = Drawing.new("Square"),
-        dist   = Drawing.new("Text")
-    }
-    local d = drawing_objects[plr]
-    d.box.Thickness = 1
-    d.box.Filled = false
-    d.name.Size = 14
-    d.name.Center = true
-    d.name.Outline = true
-    d.hp_bg.Filled = true
-    d.hp_bg.Color = Color3.fromRGB(30, 30, 30)
-    d.hp_bar.Filled = true
-    d.hp_bar.Color = Color3.fromRGB(80, 220, 120)
-    d.dist.Size = 13
-    d.dist.Center = true
-    d.dist.Outline = true
-end
-
-for _, plr in ipairs(Players:GetPlayers()) do create_esp(plr) end
-Players.PlayerAdded:Connect(create_esp)
-Players.PlayerRemoving:Connect(function(plr)
-    if drawing_objects[plr] then
-        for _, obj in pairs(drawing_objects[plr]) do pcall(function() obj:Remove() end) end
-        drawing_objects[plr] = nil
-    end
-end)
-
--- ===================== ESP LOGIC =====================
-local function update_esp()
-    if not config.esp_enabled then
-        for _, d in pairs(drawing_objects) do
-            for _, obj in pairs(d) do if obj then obj.Visible = false end end
-        end
-        return
-    end
-
-    for plr, d in pairs(drawing_objects) do
-        local show = plr.Parent and is_alive(plr)
-        if show and config.esp_team_check and same_team(plr, LocalPlayer) then show = false end
-
-        if not show then
-            for _, obj in pairs(d) do if obj then obj.Visible = false end end
-            continue
-        end
-
-        local head = plr.Character:FindFirstChild("Head")
-        local root = plr.Character:FindFirstChild("HumanoidRootPart")
-        local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-        if not head or not root or not hum then continue end
-
-        local top, top_on = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.8, 0))
-        local bottom, bottom_on = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 2.5, 0))
-        
-        if not (top_on or bottom_on) then
-            for _, obj in pairs(d) do if obj then obj.Visible = false end end
-            continue
-        end
-
-        local height = math.abs(bottom.Y - top.Y)
-        local width = height * 0.55
-        local x = math.min(top.X, bottom.X) - width / 2
-        local y = math.min(top.Y, bottom.Y)
-
-        if config.esp_box then
-            d.box.Size = Vector2.new(width, height)
-            d.box.Position = Vector2.new(x, y)
-            d.box.Color = config.accent
-            d.box.Visible = true
-        else d.box.Visible = false end
-
-        if config.esp_health then
-            local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-            local bar_h = height * pct
-            d.hp_bg.Size = Vector2.new(3, height)
-            d.hp_bg.Position = Vector2.new(x - 6, y)
-            d.hp_bar.Size = Vector2.new(3, bar_h)
-            d.hp_bar.Position = Vector2.new(x - 6, y + (height - bar_h))
-            d.hp_bg.Visible = true
-            d.hp_bar.Visible = true
-        else
-            d.hp_bg.Visible = false
-            d.hp_bar.Visible = false
-        end
-
-        if config.esp_name then
-            d.name.Text = plr.Name
-            d.name.Position = Vector2.new(x + width / 2, y - 16)
-            d.name.Color = config.text
-            d.name.Visible = true
-        else d.name.Visible = false end
-
-        if config.esp_distance then
-            d.dist.Text = string.format("%dm", math.floor((root.Position - Camera.CFrame.Position).Magnitude))
-            d.dist.Position = Vector2.new(x + width / 2, y + height + 4)
-            d.dist.Color = Color3.fromRGB(200, 190, 220)
-            d.dist.Visible = true
-        else d.dist.Visible = false end
-    end
-end
-
--- ===================== AIMBOT LOGIC =====================
-local function get_target()
-    local center = Camera.ViewportSize / 2
-    local best, best_dist = nil, config.aim_fov
-    
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and is_alive(plr) then
-            if not (config.aim_team_check and same_team(plr, LocalPlayer)) then
-                local hitbox = get_hitbox(plr.Character)
-                if hitbox then
-                    local sp, on = Camera:WorldToViewportPoint(hitbox.Position)
-                    if on and sp.Z > 0 and has_los(plr.Character, hitbox) then
-                        local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                        if dist < best_dist then
-                            best, best_dist = { part = hitbox, root = plr.Character:FindFirstChild("HumanoidRootPart") }, dist
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
--- Prioridade máxima para vencer a câmera do jogo
-RunService:BindToRenderStep("XynAim", Enum.RenderPriority.Camera.Value + 100, function()
-    local mouse_on_gui = is_mouse_over_gui()
-    
-    if fov_circle then
-        fov_circle.Position = Camera.ViewportSize / 2
-        fov_circle.Radius = config.aim_fov
-        fov_circle.Visible = config.aim_enabled and not mouse_on_gui
-        fov_circle.Color = config.accent
-    end
-
-    -- Zera o offset do ombro (se houver) para centralizar a mira
-    local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if config.aim_enabled and hum then
-        pcall(function() hum.CameraOffset = Vector3.new(0, 0, 0) end)
-    end
-
-    if config.aim_enabled and not mouse_on_gui then
-        local t = get_target()
-        if t then
-            local target_pos = t.part.Position
-            if config.aim_prediction > 0 and t.root then
-                target_pos = target_pos + (t.root.AssemblyLinearVelocity * config.aim_prediction)
-            end
-            
-            local target_cf = CFrame.lookAt(Camera.CFrame.Position, target_pos)
-            if config.aim_smooth >= 1.0 then
-                Camera.CFrame = target_cf
-            else
-                Camera.CFrame = Camera.CFrame:Lerp(target_cf, config.aim_smooth)
-            end
-        end
-    end
-end)
-
-RunService.RenderStepped:Connect(update_esp)
-
--- ===================== INPUTS =====================
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.RightShift then
